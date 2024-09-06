@@ -20,34 +20,40 @@ jobs:
       with:
         python-version: '3.10'
 
-    # Step 2: Add conda to the system path
-    - name: Add conda to system path
-      run: |
-        echo $CONDA/bin >> $GITHUB_PATH
-
-    # Step 3: Upgrade setuptools and wheel
-    - name: Upgrade setuptools and wheel
-      run: |
-        pip install --upgrade setuptools wheel
-
-    # Step 4: Set up Miniconda (optional if you're using conda)
+    # Step 2: Install Miniconda and initialize
     - name: Set up Miniconda
       uses: conda-incubator/setup-miniconda@v2
       with:
         auto-update-conda: true
+        python-version: 3.10
 
-    # Step 5: Install dependencies using conda or pip
+    # Step 3: Initialize Conda
+    - name: Initialize Conda
+      shell: bash -l {0}
+      run: |
+        conda init bash
+        source ~/.bashrc
+
+    # Step 4: Create and activate Conda environment
+    - name: Create and activate Conda environment
+      run: |
+        conda create --name myenv python=3.10 -y
+        conda activate myenv
+
+    # Step 5: Upgrade setuptools and wheel
+    - name: Upgrade setuptools and wheel
+      run: |
+        pip install --upgrade setuptools wheel
+
+    # Step 6: Install dependencies from requirements.txt
     - name: Install dependencies
       run: |
-        conda create -n myenv python=3.10 -y
-        conda activate myenv
-        pip install --upgrade pip
         pip install -r requirements.txt
     
-    # Step 6: Lint the code with flake8
+    # Step 7: Lint the code with flake8
     - name: Run lint with flake8
       run: flake8 .
 
-    # Step 7: Run tests (optional)
+    # Step 8: Run tests (optional)
     - name: Run tests
       run: pytest
