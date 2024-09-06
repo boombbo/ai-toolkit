@@ -1,39 +1,53 @@
 name: Python Package using Conda
 
-on: [push]
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build-linux:
     runs-on: ubuntu-latest
-    strategy:
-      max-parallel: 5
-
     steps:
     - uses: actions/checkout@v4
+    
+    # Step 1: Set up Python 3.10
     - name: Set up Python 3.10
       uses: actions/setup-python@v3
       with:
         python-version: '3.10'
 
+    # Step 2: Add conda to the system path
     - name: Add conda to system path
       run: |
         echo $CONDA/bin >> $GITHUB_PATH
 
+    # Step 3: Upgrade setuptools and wheel
     - name: Upgrade setuptools and wheel
       run: |
         pip install --upgrade setuptools wheel
 
+    # Step 4: Set up Miniconda (optional if you're using conda)
+    - name: Set up Miniconda
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        auto-update-conda: true
+
+    # Step 5: Install dependencies using conda or pip
     - name: Install dependencies
       run: |
-        pip install --use-pep517 -r requirements.txt
+        conda create -n myenv python=3.10 -y
+        conda activate myenv
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    # Step 6: Lint the code with flake8
+    - name: Run lint with flake8
+      run: flake8 .
 
-    - name: Lint with flake8
-      run: |
-        conda install flake8
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
-    - name: Test with pytest
-      run: |
-        conda install pytest
-        pytest
+    # Step 7: Run tests (optional)
+    - name: Run tests
+      run: pytest
