@@ -236,6 +236,7 @@ class TrainConfig:
         self.min_denoising_steps: int = kwargs.get('min_denoising_steps', 0)
         self.max_denoising_steps: int = kwargs.get('max_denoising_steps', 1000)
         self.batch_size: int = kwargs.get('batch_size', 1)
+        self.orig_batch_size: int = self.batch_size
         self.dtype: str = kwargs.get('dtype', 'fp32')
         self.xformers = kwargs.get('xformers', False)
         self.sdp = kwargs.get('sdp', False)
@@ -284,7 +285,15 @@ class TrainConfig:
 
         # set to -1 to accumulate gradients for entire epoch
         # warning, only do this with a small dataset or you will run out of memory
+        # This is legacy but left in for backwards compatibility
         self.gradient_accumulation_steps = kwargs.get('gradient_accumulation_steps', 1)
+
+        # this will do proper gradient accumulation where you will not see a step until the end of the accumulation
+        # the method above will show a step every accumulation
+        self.gradient_accumulation = kwargs.get('gradient_accumulation', 1)
+        if self.gradient_accumulation > 1:
+            if self.gradient_accumulation_steps != 1:
+                raise ValueError("gradient_accumulation and gradient_accumulation_steps are mutually exclusive")
 
         # short long captions will double your batch size. This only works when a dataset is
         # prepared with a json caption file that has both short and long captions in it. It will
@@ -359,6 +368,7 @@ class TrainConfig:
         self.target_norm_std = kwargs.get('target_norm_std', None)
         self.target_norm_std_value = kwargs.get('target_norm_std_value', 1.0)
         self.linear_timesteps = kwargs.get('linear_timesteps', False)
+        self.linear_timesteps2 = kwargs.get('linear_timesteps2', False)
         self.disable_sampling = kwargs.get('disable_sampling', False)
 
 
@@ -416,6 +426,9 @@ class ModelConfig:
         # only for flux for now
         self.quantize = kwargs.get("quantize", False)
         self.low_vram = kwargs.get("low_vram", False)
+        self.attn_masking = kwargs.get("attn_masking", False)
+        if self.attn_masking and not self.is_flux:
+            raise ValueError("attn_masking is only supported with flux models currently")
         pass
 
 
