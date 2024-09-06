@@ -20,40 +20,39 @@ jobs:
       with:
         python-version: '3.10'
 
-    # Step 2: Install Miniconda and initialize
+    # Step 2: Install Miniconda
     - name: Set up Miniconda
       uses: conda-incubator/setup-miniconda@v2
       with:
         auto-update-conda: true
         python-version: 3.10
 
-    # Step 3: Initialize Conda
-    - name: Initialize Conda
-      shell: bash -l {0}
-      run: |
-        conda init bash
-        source ~/.bashrc
-
-    # Step 4: Create and activate Conda environment
+    # Step 3: Initialize Conda and create environment
     - name: Create and activate Conda environment
       run: |
-        conda create --name myenv python=3.10 -y
-        conda activate myenv
-
-    # Step 5: Upgrade setuptools and wheel
+        conda create --name ai_bobo_env python=3.10 -y
+        conda init bash  # Initialize conda for the current shell
+        source ~/.bashrc  # Reload shell to apply conda init changes
+        conda activate ai_bobo_env  # Now activate the created environment
+    
+    # Step 4: Upgrade setuptools and wheel
     - name: Upgrade setuptools and wheel
       run: |
         pip install --upgrade setuptools wheel
+      shell: bash -l {0}  # Make sure the shell is a login shell
 
-    # Step 6: Install dependencies from requirements.txt
+    # Step 5: Install dependencies from requirements.txt
     - name: Install dependencies
       run: |
         pip install -r requirements.txt
-    
-    # Step 7: Lint the code with flake8
+      shell: bash -l {0}  # Ensure it runs inside the activated environment
+
+    # Step 6: Lint the code with flake8 (optional)
     - name: Run lint with flake8
       run: flake8 .
+      shell: bash -l {0}
 
-    # Step 8: Run tests (optional)
+    # Step 7: Run tests (optional)
     - name: Run tests
       run: pytest
+      shell: bash -l {0}
