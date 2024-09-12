@@ -12,32 +12,32 @@ jobs:
     steps:
       # Step 1: 检查出你的 repo
       - name: Checkout repository
-        uses: actions/checkout@v3  # Update to v3
+        uses: actions/checkout@v3
         with:
-          persist-credentials: false  # 禁用自动 GitHub 登录
-          fetch-depth: 0  # 拉取完整历史记录，以确保可以进行合并
+          persist-credentials: false
+          fetch-depth: 0
 
-      # Step 2: 配置 Git
+      # Step 2: 加载 Secrets
       - name: Set up Git
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "${{ secrets.GH_USERNAME }}"
+          git config user.email "${{ secrets.GH_EMAIL }}"
 
       # Step 3: 添加上游仓库
       - name: Add upstream repository
         run: |
-          git remote add upstream https://github.com/ostris/ai-toolkit.git  # 替换为上游仓库地址
+          git remote add upstream https://github.com/ostris/ai-toolkit.git
           git fetch upstream
 
       # Step 4: 合并上游更改到本地 main 分支
       - name: Merge upstream changes
         run: |
           git checkout main
-          git merge upstream/main --strategy-option theirs  # 保留本地内容，合并上游更改
+          git merge upstream/main --strategy-option theirs
 
       # Step 5: 推送合并后的代码到远程仓库
       - name: Push changes
         run: |
           git push origin main
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub 自动提供的 token，用于认证
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
