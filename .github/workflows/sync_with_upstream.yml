@@ -17,7 +17,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # Step 2: 加载 Secrets
+      # Step 2: 加载 Secrets 并设置 Git
       - name: Set up Git
         run: |
           git config user.name "${{ secrets.GH_USERNAME }}"
@@ -38,6 +38,7 @@ jobs:
       # Step 5: 推送合并后的代码到远程仓库
       - name: Push changes
         run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/boombbo/ai-toolkit.git
           git push origin main
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # 使用存储在 Secrets 中的访问令牌
