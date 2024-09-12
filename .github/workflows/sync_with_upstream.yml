@@ -12,7 +12,7 @@ jobs:
     steps:
       # Step 1: 检查出你的 repo
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3  # Update to v3
         with:
           persist-credentials: false  # 禁用自动 GitHub 登录
           fetch-depth: 0  # 拉取完整历史记录，以确保可以进行合并
