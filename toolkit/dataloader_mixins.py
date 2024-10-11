@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
-from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection, SiglipImageProcessor
 
 from toolkit.basic import flush, value_map
 from toolkit.buckets import get_bucket_for_image_size, get_resolution
@@ -121,6 +121,9 @@ class CaptionMixin:
                 prompt_path = path_no_ext + '.' + ext
                 if os.path.exists(prompt_path):
                     break
+                
+        # allow folders to have a default prompt
+        default_prompt_path = os.path.join(os.path.dirname(img_path), 'default.txt')
 
         if os.path.exists(prompt_path):
             with open(prompt_path, 'r', encoding='utf-8') as f:
@@ -131,6 +134,10 @@ class CaptionMixin:
                     if 'caption' in prompt:
                         prompt = prompt['caption']
 
+                prompt = clean_caption(prompt)
+        elif os.path.exists(default_prompt_path):
+            with open(default_prompt_path, 'r', encoding='utf-8') as f:
+                prompt = f.read()
                 prompt = clean_caption(prompt)
         else:
             prompt = ''
@@ -757,7 +764,8 @@ class ClipImageFileItemDTOMixin:
             return self.clip_image_path
 
     def load_clip_image(self: 'FileItemDTO'):
-        is_dynamic_size_and_aspect = isinstance(self.clip_image_processor, PixtralVisionImagePreprocessorCompatible)
+        is_dynamic_size_and_aspect = isinstance(self.clip_image_processor, PixtralVisionImagePreprocessorCompatible) or \
+                                    isinstance(self.clip_image_processor, SiglipImageProcessor)
         if self.is_vision_clip_cached:
             self.clip_image_embeds = load_file(self.get_clip_vision_embeddings_path())
 
@@ -787,21 +795,7 @@ class ClipImageFileItemDTOMixin:
             img = img.transpose(Image.FLIP_TOP_BOTTOM)
             
         if is_dynamic_size_and_aspect:
-            # just match the bucket size for now
-            if self.dataset_config.buckets:
-                # scale and crop based on file item
-                img = img.resize((self.scale_to_width, self.scale_to_height), Image.BICUBIC)
-                # img = transforms.CenterCrop((self.crop_height, self.crop_width))(img)
-                # crop
-                img = img.crop((
-                    self.crop_x,
-                    self.crop_y,
-                    self.crop_x + self.crop_width,
-                    self.crop_y + self.crop_height
-                ))
-            else:
-                raise Exception("Control images not supported for non-bucket datasets")
-        
+            pass  # let the image processor handle it
         elif img.width != img.height:
             min_size = min(img.width, img.height)
             if self.dataset_config.square_crop:
