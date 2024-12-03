@@ -1,134 +1,43 @@
+from collections import OrderedDict
 import math
 from typing import List
 import torch
-from toolkit.optimizers.optimizer_utils import copy_stochastic, stochastic_grad_accummulation
+from toolkit.optimizers.optimizer_utils import Auto8bitTensor, copy_stochastic, stochastic_grad_accummulation
 from optimum.quanto import QBytesTensor
 import random
 
 
-class Adafactor(torch.optim.Optimizer):
-    """
-    Adafactor implementation with stochastic rounding accumulation and stochastic rounding on apply.
-    Modified from transformers Adafactor implementation to support stochastic rounding accumulation and apply.
-
-    AdaFactor pytorch implementation can be used as a drop in replacement for Adam original fairseq code:
-    https://github.com/pytorch/fairseq/blob/master/fairseq/optim/adafactor.py
-
-    Paper: *Adafactor: Adaptive Learning Rates with Sublinear Memory Cost* https://arxiv.org/abs/1804.04235 Note that
-    this optimizer internally adjusts the learning rate depending on the `scale_parameter`, `relative_step` and
-    `warmup_init` options. To use a manual (external) learning rate schedule you should set `scale_parameter=False` and
-    `relative_step=False`.
-
-    Arguments:
-        params (`Iterable[nn.parameter.Parameter]`):
-            Iterable of parameters to optimize or dictionaries defining parameter groups.
-        lr (`float`, *optional*):
-            The external learning rate.
-        eps (`Tuple[float, float]`, *optional*, defaults to `(1e-30, 0.001)`):
-            Regularization constants for square gradient and parameter scale respectively
-        clip_threshold (`float`, *optional*, defaults to 1.0):
-            Threshold of root mean square of final gradient update
-        decay_rate (`float`, *optional*, defaults to -0.8):
-            Coefficient used to compute running averages of square
-        beta1 (`float`, *optional*):
-            Coefficient used for computing running averages of gradient
-        weight_decay (`float`, *optional*, defaults to 0.0):
-            Weight decay (L2 penalty)
-        scale_parameter (`bool`, *optional*, defaults to `True`):
-            If True, learning rate is scaled by root mean square
-        relative_step (`bool`, *optional*, defaults to `True`):
-            If True, time-dependent learning rate is computed instead of external learning rate
-        warmup_init (`bool`, *optional*, defaults to `False`):
-            Time-dependent learning rate computation depends on whether warm-up initialization is being used
-
-    This implementation handles low-precision (FP16, bfloat) values, but we have not thoroughly tested.
-
-    Recommended T5 finetuning settings (https://discuss.huggingface.co/t/t5-finetuning-tips/684/3):
-
-        - Training without LR warmup or clip_threshold is not recommended.
-
-           - use scheduled LR warm-up to fixed LR
-           - use clip_threshold=1.0 (https://arxiv.org/abs/1804.04235)
-        - Disable relative updates
-        - Use scale_parameter=False
-        - Additional optimizer operations like gradient clipping should not be used alongside Adafactor
-
-    Example:
-
-    ```python
-    Adafactor(model.parameters(), scale_parameter=False, relative_step=False, warmup_init=False, lr=1e-3)
-    ```
-
-    Others reported the following combination to work well:
-
-    ```python
-    Adafactor(model.parameters(), scale_parameter=True, relative_step=True, warmup_init=True, lr=None)
-    ```
-
-    When using `lr=None` with [`Trainer`] you will most likely need to use [`~optimization.AdafactorSchedule`]
-    scheduler as following:
-
-    ```python
-    from transformers.optimization import Adafactor, AdafactorSchedule
-
-    optimizer = Adafactor(model.parameters(), scale_parameter=True, relative_step=True, warmup_init=True, lr=None)
-    lr_scheduler = AdafactorSchedule(optimizer)
-    trainer = Trainer(..., optimizers=(optimizer, lr_scheduler))
-    ```
-
-    Usage:
-
-    ```python
-    # replace AdamW with Adafactor
-    optimizer = Adafactor(
-        model.parameters(),
-        lr=1e-3,
-        eps=(1e-30, 1e-3),
-        clip_threshold=1.0,
-        decay_rate=-0.8,
-        beta1=None,
-        weight_decay=0.0,
-        relative_step=False,
-        scale_parameter=False,
-        warmup_init=False,
-    )
-    ```"""
-
+class Automagic(torch.optim.Optimizer):
     def __init__(
         self,
         params,
         lr=None,
+        min_lr=1e-7,
+        max_lr=1e-3,
+        lr_pump_scale=1.1,
+        lr_dump_scale=0.85,
         eps=(1e-30, 1e-3),
         clip_threshold=1.0,
         decay_rate=-0.8,
-        beta1=None,
         weight_decay=0.0,
-        scale_parameter=True,
-        relative_step=True,
-        warmup_init=False,
         do_paramiter_swapping=False,
         paramiter_swapping_factor=0.1,
     ):
-        if lr is not None and relative_step:
-            raise ValueError(
-                "Cannot combine manual `lr` and `relative_step=True` options")
-        if warmup_init and not relative_step:
-            raise ValueError(
-                "`warmup_init=True` requires `relative_step=True`")
+        self.lr = lr
+        self.min_lr = min_lr
+        self.max_lr = max_lr
+        self.lr_pump_scale = lr_pump_scale
+        self.lr_dump_scale = lr_dump_scale
 
         defaults = {
             "lr": lr,
             "eps": eps,
             "clip_threshold": clip_threshold,
             "decay_rate": decay_rate,
-            "beta1": beta1,
             "weight_decay": weight_decay,
-            "scale_parameter": scale_parameter,
-            "relative_step": relative_step,
-            "warmup_init": warmup_init,
         }
         super().__init__(params, defaults)
-        
+
         self.base_lrs: List[float] = [
             lr for group in self.param_groups
         ]
@@ -143,7 +52,7 @@ class Adafactor(torch.optim.Optimizer):
                     param.register_post_accumulate_grad_hook(
                         stochastic_grad_accummulation
                     )
-    
+
         self.do_paramiter_swapping = do_paramiter_swapping
         self.paramiter_swapping_factor = paramiter_swapping_factor
         self._total_paramiter_size = 0
@@ -153,18 +62,17 @@ class Adafactor(torch.optim.Optimizer):
                 self._total_paramiter_size += torch.numel(param)
         # pretty print total paramiters with comma seperation
         print(f"Total training paramiters: {self._total_paramiter_size:,}")
-        
+
         # needs to be enabled to count paramiters
         if self.do_paramiter_swapping:
             self.enable_paramiter_swapping(self.paramiter_swapping_factor)
-        
-    
+
     def enable_paramiter_swapping(self, paramiter_swapping_factor=0.1):
         self.do_paramiter_swapping = True
         self.paramiter_swapping_factor = paramiter_swapping_factor
         # call it an initial time
         self.swap_paramiters()
-                    
+
     def swap_paramiters(self):
         all_params = []
         # deactivate all paramiters
@@ -176,9 +84,10 @@ class Adafactor(torch.optim.Optimizer):
                 all_params.append(param)
         # shuffle all paramiters
         random.shuffle(all_params)
-        
+
         # keep activating paramiters until we are going to go over the target paramiters
-        target_paramiters = int(self._total_paramiter_size * self.paramiter_swapping_factor)
+        target_paramiters = int(
+            self._total_paramiter_size * self.paramiter_swapping_factor)
         total_paramiters = 0
         for param in all_params:
             total_paramiters += torch.numel(param)
@@ -189,21 +98,20 @@ class Adafactor(torch.optim.Optimizer):
 
     @staticmethod
     def _get_lr(param_group, param_state):
-        rel_step_sz = param_group["lr"]
-        if param_group["relative_step"]:
-            min_step = 1e-6 * \
-                param_state["step"] if param_group["warmup_init"] else 1e-2
-            rel_step_sz = min(min_step, 1.0 / math.sqrt(param_state["step"]))
-        param_scale = 1.0
-        if param_group["scale_parameter"]:
-            param_scale = max(param_group["eps"][1], param_state["RMS"])
-        return param_scale * rel_step_sz
+        if 'avg_lr' in param_state:
+            lr = param_state["avg_lr"]
+        else:
+            lr = param_state["lr"]
+        return lr
 
-    @staticmethod
-    def _get_options(param_group, param_shape):
-        factored = len(param_shape) >= 2
-        use_first_moment = param_group["beta1"] is not None
-        return factored, use_first_moment
+    def _get_group_lr(self, group):
+        group_lrs = []
+        for p in group["params"]:
+            group_lrs.append(self._get_lr(group, self.state[p]))
+        # return avg
+        if len(group_lrs) == 0:
+            return self.lr
+        return sum(group_lrs) / len(group_lrs)
 
     @staticmethod
     def _rms(tensor):
@@ -230,14 +138,18 @@ class Adafactor(torch.optim.Optimizer):
 
     # adafactor manages its own lr
     def get_learning_rates(self):
+
         lrs = [
-            self._get_lr(group, self.state[group["params"][0]])
+            self._get_group_lr(group)
             for group in self.param_groups
-            if group["params"][0].grad is not None
         ]
         if len(lrs) == 0:
             lrs = self.base_lrs  # if called before stepping
         return lrs
+
+    def get_avg_learning_rate(self):
+        lrs = self.get_learning_rates()
+        return sum(lrs) / len(lrs)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -263,32 +175,16 @@ class Adafactor(torch.optim.Optimizer):
                     grad = grad.to(torch.float32)
                 if grad.is_sparse:
                     raise RuntimeError(
-                        "Adafactor does not support sparse gradients.")
+                        "Automagic does not support sparse gradients.")
 
                 state = self.state[p]
                 grad_shape = grad.shape
 
-                factored, use_first_moment = self._get_options(
-                    group, grad_shape)
+                factored = len(grad_shape) >= 2
                 # State Initialization
                 if len(state) == 0:
-                    state["step"] = 0
-
-                    if use_first_moment:
-                        # Exponential moving average of gradient values
-                        state["exp_avg"] = torch.zeros_like(grad)
-                    if factored:
-                        state["exp_avg_sq_row"] = torch.zeros(
-                            grad_shape[:-1]).to(grad)
-                        state["exp_avg_sq_col"] = torch.zeros(
-                            grad_shape[:-2] + grad_shape[-1:]).to(grad)
-                    else:
-                        state["exp_avg_sq"] = torch.zeros_like(grad)
-
-                    state["RMS"] = 0
+                    self.initialize_state(p)
                 else:
-                    if use_first_moment:
-                        state["exp_avg"] = state["exp_avg"].to(grad)
                     if factored:
                         state["exp_avg_sq_row"] = state["exp_avg_sq_row"].to(
                             grad)
@@ -298,7 +194,7 @@ class Adafactor(torch.optim.Optimizer):
                         state["exp_avg_sq"] = state["exp_avg_sq"].to(grad)
 
                 p_data_fp32 = p
-                
+
                 if isinstance(p_data_fp32, QBytesTensor):
                     p_data_fp32 = p_data_fp32.dequantize()
                 if p.dtype != torch.float32:
@@ -306,7 +202,7 @@ class Adafactor(torch.optim.Optimizer):
 
                 state["step"] += 1
                 state["RMS"] = self._rms(p_data_fp32)
-                lr = self._get_lr(group, state)
+                # lr = self._get_lr(group, state)
 
                 beta2t = 1.0 - math.pow(state["step"], group["decay_rate"])
                 eps = group["eps"]
@@ -334,17 +230,47 @@ class Adafactor(torch.optim.Optimizer):
 
                 update.div_(
                     (self._rms(update) / group["clip_threshold"]).clamp_(min=1.0))
-                update.mul_(lr)
 
-                if use_first_moment:
-                    exp_avg = state["exp_avg"]
-                    exp_avg.mul_(group["beta1"]).add_(
-                        update, alpha=(1 - group["beta1"]))
-                    update = exp_avg
+                # calculate new lr mask. if the updated param is going in same direction, increase lr, else decrease
+                # update the lr mask. self.lr_momentum is < 1.0. If a paramiter is positive and increasing (or negative and decreasing), increase lr,
+                # for that single paramiter. If a paramiter is negative and increasing or positive and decreasing, decrease lr for that single paramiter.
+                # to decrease lr, multiple by self.lr_momentum, to increase lr, divide by self.lr_momentum.
+
+                # not doing it this way anymore
+                # update.mul_(lr)
+
+                # Get signs of current last update and updates
+                last_polarity = state['last_polarity']
+                current_polarity = (update > 0).to(torch.bool)
+                sign_agreement = torch.where(
+                    last_polarity == current_polarity, 1, -1)
+                state['last_polarity'] = current_polarity
+
+                lr_mask = state['lr_mask'].to(torch.float32)
+
+                # Update learning rate mask based on sign agreement
+                new_lr = torch.where(
+                    sign_agreement > 0,
+                    lr_mask * self.lr_pump_scale,  # Increase lr
+                    lr_mask * self.lr_dump_scale  # Decrease lr
+                )
+
+                # Clip learning rates to bounds
+                new_lr = torch.clamp(
+                    new_lr,
+                    min=self.min_lr,
+                    max=self.max_lr
+                )
+
+                # Apply the learning rate mask to the update
+                update.mul_(new_lr)
+
+                state['lr_mask'] = Auto8bitTensor(new_lr)
+                state['avg_lr'] = torch.mean(new_lr)
 
                 if group["weight_decay"] != 0:
                     p_data_fp32.add_(
-                        p_data_fp32, alpha=(-group["weight_decay"] * lr))
+                        p_data_fp32, alpha=(-group["weight_decay"] * new_lr))
 
                 p_data_fp32.add_(-update)
 
@@ -353,3 +279,57 @@ class Adafactor(torch.optim.Optimizer):
                     copy_stochastic(p, p_data_fp32)
 
         return loss
+    
+    def initialize_state(self, p):
+        state = self.state[p]
+        state["step"] = 0
+
+        # store the lr mask
+        if 'lr_mask' not in state:
+            state['lr_mask'] = Auto8bitTensor(torch.ones(
+                p.shape).to(p.device, dtype=torch.float32) * self.lr
+            )
+        state['avg_lr'] = torch.mean(
+            state['lr_mask'].to(torch.float32))
+        if 'last_polarity' not in state:
+            state['last_polarity'] = torch.zeros(
+                p.shape, dtype=torch.bool, device=p.device)
+        
+        factored = len(p.shape) >= 2
+        if factored:
+            state["exp_avg_sq_row"] = torch.zeros(
+                p.shape[:-1]).to(p)
+            state["exp_avg_sq_col"] = torch.zeros(
+                p.shape[:-2] + p.shape[-1:]).to(p)
+        else:
+            state["exp_avg_sq"] = torch.zeros_like(p)
+
+        state["RMS"] = 0
+    
+    # override the state_dict to save the lr_mask
+    def state_dict(self, *args, **kwargs):
+        orig_state_dict = super().state_dict(*args, **kwargs)
+        # convert the state to quantized tensor to scale and quantized
+        new_sace_state = {}
+        for p, state in orig_state_dict['state'].items():
+            save_state = {k: v for k, v in state.items() if k != 'lr_mask'}
+            save_state['lr_mask'] = state['lr_mask'].state_dict()
+            new_sace_state[p] = save_state
+            
+        orig_state_dict['state'] = new_sace_state
+        
+        return orig_state_dict
+    
+    def load_state_dict(self, state_dict, strict=True):
+        # load the lr_mask from the state_dict
+        idx = 0
+        for group in self.param_groups:
+            for p in group['params']:
+                self.initialize_state(p)
+                state = self.state[p]
+                m = state_dict['state'][idx]['lr_mask']
+                sd_mask = m['quantized'].to(m['orig_dtype']) * m['scale']
+                state['lr_mask'] = Auto8bitTensor(sd_mask)
+                del state_dict['state'][idx]['lr_mask']
+                idx += 1
+        super().load_state_dict(state_dict, strict)
